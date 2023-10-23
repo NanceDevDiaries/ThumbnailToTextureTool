@@ -1,0 +1,23 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "ThumbnailToTextureTool",
+	"Description": "Adds option to export asset thumbnail to texture on right click. Path to save is configurable in project settings",
+	"Category": "Other",
+	"CreatedBy": "NanceDevDiaries",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"EngineVersion": "5.3.0",
+	"CanContainContent": true,
+	"Installed": true,
+	"Modules": [
+		{
+			"Name": "ThumbnailToTextureTool",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
