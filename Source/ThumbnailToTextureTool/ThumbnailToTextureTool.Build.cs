@@ -26,6 +26,8 @@ public class ThumbnailToTextureTool : ModuleRules
 			new string[]
 			{
 				"Core",
+				"RenderCore",
+				"RHI", "UnrealEd", "UnrealEd", "UMG"
 				// ... add other public dependencies that you statically link with here ...
 			}
 			);
@@ -38,7 +40,7 @@ public class ThumbnailToTextureTool : ModuleRules
 				"Engine",
 				"Slate",
 				"SlateCore",
-				"UnrealEd"
+				"UnrealEd",
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);

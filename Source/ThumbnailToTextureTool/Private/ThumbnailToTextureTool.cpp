@@ -1,5 +1,7 @@
 // Credits please, open source from NanceDevDiaries. Game on!
 
+#include "CustomBlueprintRenderer.h"
+#include "CanvasTypes.h"
 #include "IThumbnailToTextureTool.h"
 
 #include "ContentBrowserModule.h"
@@ -8,8 +10,16 @@
 #include "ISettingsSection.h"
 #include "ObjectTools.h"
 #include "ThumbnailToTextureSettings.h"
+#include "UnrealEdGlobals.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "UObject/SavePackage.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "CustomSkeletalMeshThumbnailRenderer.h"
+#include "CustomStaticMeshThumbnailRenderer.h"
+#include "ThumbnailRendering/BlueprintThumbnailRenderer.h"
+#include "ThumbnailRendering/SkeletalMeshThumbnailRenderer.h"
+#include "ThumbnailRendering/StaticMeshThumbnailRenderer.h"
+#include "ThumbnailRendering/TextureThumbnailRenderer.h"
 
 #define LOCTEXT_NAMESPACE "FThumbnailToTextureToolModule"
 
@@ -24,9 +34,18 @@ public:
 
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
+	/** Returns whether the Header View supports the given class */
+	static bool DoesAssetSupportExportToThumbnail(const FAssetData& AssetData);
+
+	UCustomBlueprintRenderer* BlueprintThumbnailRenderer;
+	UCustomStaticMeshThumbnailRenderer* StaticMeshThumbnailRenderer;
+	UCustomSkeletalMeshThumbnailRenderer* SkeletalMeshThumbnailRenderer;
 
 protected:
 	virtual UThumbnailToTextureSettings* GetEditorSettingsInstance() const override;
+	virtual UCustomBlueprintRenderer* GetCustomBlueprintThumbnailRendererInstance() override;
+	virtual UCustomStaticMeshThumbnailRenderer* GetCustomStaticMeshThumbnailRendererInstance() override;
+	virtual UCustomSkeletalMeshThumbnailRenderer* GetCustomSkeletalMeshThumbnailRendererInstance() override;
 
 private:
 	void AddContentBrowserContextMenuExtender();
@@ -38,17 +57,36 @@ private:
 	FDelegateHandle ContentBrowserExtenderDelegateHandle;
 
 	void CreateThumbnailSettings();
+
+private:
 	UThumbnailToTextureSettings* ThumbnailToTextureEditorSettings;
 };
 
 
-FThumbnailToTextureToolModule::FThumbnailToTextureToolModule()
+FThumbnailToTextureToolModule::FThumbnailToTextureToolModule(): BlueprintThumbnailRenderer(nullptr),
+                                                                StaticMeshThumbnailRenderer(nullptr),
+                                                                SkeletalMeshThumbnailRenderer(nullptr)
 {
 	ThumbnailToTextureEditorSettings = nullptr;
 }
 
 void FThumbnailToTextureToolModule::StartupModule()
 {
+	BlueprintThumbnailRenderer = NewObject<UCustomBlueprintRenderer>(GetTransientPackage(),
+	                                                                 UCustomBlueprintRenderer::StaticClass());
+	check(BlueprintThumbnailRenderer);
+	BlueprintThumbnailRenderer->AddToRoot();
+
+	StaticMeshThumbnailRenderer = NewObject<UCustomStaticMeshThumbnailRenderer>(
+		GetTransientPackage(), UCustomStaticMeshThumbnailRenderer::StaticClass());
+	check(StaticMeshThumbnailRenderer);
+	StaticMeshThumbnailRenderer->AddToRoot();
+
+	SkeletalMeshThumbnailRenderer = NewObject<UCustomSkeletalMeshThumbnailRenderer>(
+		GetTransientPackage(), UCustomSkeletalMeshThumbnailRenderer::StaticClass());
+	check(SkeletalMeshThumbnailRenderer);
+	SkeletalMeshThumbnailRenderer->AddToRoot();
+
 	CreateThumbnailSettings();
 	AddContentBrowserContextMenuExtender();
 }
@@ -68,13 +106,43 @@ void FThumbnailToTextureToolModule::ShutdownModule()
 	if (!GExitPurge) // If GExitPurge Object is already gone
 	{
 		ThumbnailToTextureEditorSettings->RemoveFromRoot();
+		BlueprintThumbnailRenderer->RemoveFromRoot();
+		StaticMeshThumbnailRenderer->RemoveFromRoot();
+		SkeletalMeshThumbnailRenderer->RemoveFromRoot();
 	}
 	ThumbnailToTextureEditorSettings = nullptr;
+	BlueprintThumbnailRenderer = nullptr;
+	StaticMeshThumbnailRenderer = nullptr;
+	SkeletalMeshThumbnailRenderer = nullptr;
+}
+
+bool FThumbnailToTextureToolModule::DoesAssetSupportExportToThumbnail(const FAssetData& AssetData)
+{
+	// #TODO (NanceDevDiaries) add more support as it comes. Example, SkeletalMesh once it's figured
+	// The logic of its saved render data
+	const FName AssetName = AssetData.AssetClassPath.GetAssetName();
+	return AssetName == TEXT("StaticMesh")
+		|| AssetName == TEXT("Blueprint");
 }
 
 UThumbnailToTextureSettings* FThumbnailToTextureToolModule::GetEditorSettingsInstance() const
 {
 	return ThumbnailToTextureEditorSettings;
+}
+
+UCustomBlueprintRenderer* FThumbnailToTextureToolModule::GetCustomBlueprintThumbnailRendererInstance()
+{
+	return BlueprintThumbnailRenderer;
+}
+
+UCustomStaticMeshThumbnailRenderer* FThumbnailToTextureToolModule::GetCustomStaticMeshThumbnailRendererInstance()
+{
+	return StaticMeshThumbnailRenderer;
+}
+
+UCustomSkeletalMeshThumbnailRenderer* FThumbnailToTextureToolModule::GetCustomSkeletalMeshThumbnailRendererInstance()
+{
+	return SkeletalMeshThumbnailRenderer;
 }
 
 void FThumbnailToTextureToolModule::AddContentBrowserContextMenuExtender()
@@ -113,12 +181,16 @@ TSharedRef<FExtender> FThumbnailToTextureToolModule::OnExtendContentBrowserAsset
 	// #todo filter out to only have assets that have a thumbnail already (Actors, not dataTables/dataAssets etc)
 
 	Extender = MakeShared<FExtender>();
-	Extender->AddMenuExtension(
-		"CommonAssetActions",
-		EExtensionHook::After,
-		nullptr,
-		FMenuExtensionDelegate::CreateStatic(&ExecuteSaveThumbnailAsTexture, SelectedAssets)
-	);
+
+	if (DoesAssetSupportExportToThumbnail(SelectedAssets[0]))
+	{
+		Extender->AddMenuExtension(
+			"CommonAssetActions",
+			EExtensionHook::After,
+			nullptr,
+			FMenuExtensionDelegate::CreateStatic(&ExecuteSaveThumbnailAsTexture, SelectedAssets)
+		);
+	}
 
 	return Extender;
 }
@@ -143,6 +215,12 @@ void FThumbnailToTextureToolModule::ExecuteSaveThumbnailAsTexture(FMenuBuilder& 
 			{
 				for (const FAssetData& AssetData : SelectedAssets)
 				{
+					if (!DoesAssetSupportExportToThumbnail(AssetData))
+					{
+						// Skip unsupported class
+						continue;
+					}
+					
 					FString GamePath = AssetData.GetAsset()->GetPathName();
 					FString AssetName;
 					if (int32 PathEnd; GamePath.FindLastChar('/', PathEnd))
@@ -188,60 +266,282 @@ void FThumbnailToTextureToolModule::ExecuteSaveThumbnailAsTexture(FMenuBuilder& 
 					Package->FullyLoad();
 
 					UTexture2D* NewTexture = NewObject<UTexture2D>(Package, *AssetName,
-					                                               RF_Public | RF_Standalone | RF_MarkAsRootSet);
-					NewTexture->AddToRoot();
+					                                               RF_Public | RF_Standalone);
+					//NewTexture->AddToRoot();
+					NewTexture->MarkPackageDirty();
 
 					// Load the image from the asset's loaded Thumbnail
 					if (FPackageName::DoesPackageExist(AssetData.PackageName.ToString(), &PackageFilename))
 					{
-						FThumbnailMap ThumbnailMap;
-						ThumbnailTools::LoadThumbnailsFromPackage(PackageFilename, ObjectFullNames,
-						                                          ThumbnailMap);
-
-						FObjectThumbnail* ObjectThumbnail = ThumbnailMap.Find(ObjectFullName);
-
-						if (!ObjectThumbnail)
+						// TODO find out more why this might happen for skeletalMeshes
+						bool FailedToFindRenderInfo = false;
+						
+						if (GetEditorSettings().UseTransparentBackground || GetEditorSettings().
+							UseCustomBackgroundMaterial)
 						{
-							return;
+							// Set the size of cached thumbnails
+							constexpr int32 ImageWidth = ThumbnailTools::DefaultThumbnailSize;
+							constexpr int32 ImageHeight = ThumbnailTools::DefaultThumbnailSize;
+
+							FObjectThumbnail ObjectThumbnail;
+							FObjectThumbnail* ObjectThumnailPtr = &ObjectThumbnail;
+
+							UObject* Object = AssetData.FastGetAsset();
+							if (Object && !IsValidChecked(Object))
+							{
+								Object = nullptr;
+							}
+
+							// Get the rendering info for this object
+							FThumbnailRenderingInfo* RenderInfo = GUnrealEd
+																	  ? GUnrealEd->GetThumbnailManager()->
+																	  GetRenderingInfo(Object)
+																	  : nullptr;
+							if (RenderInfo)
+							{
+								ObjectThumbnail.SetImageSize(ImageWidth, ImageHeight);
+
+								UTextureRenderTarget2D* RenderTargetTexture = NewObject<UTextureRenderTarget2D>();
+								RenderTargetTexture->AddToRoot();
+								check(RenderTargetTexture);
+								RenderTargetTexture->ClearColor = FLinearColor::White;
+								RenderTargetTexture->SRGB = 1;
+								RenderTargetTexture->RenderTargetFormat = RTF_RGBA8;
+								constexpr bool bForceLinearGamma = false;
+								RenderTargetTexture->InitCustomFormat(ThumbnailTools::DefaultThumbnailSize,
+																	  ThumbnailTools::DefaultThumbnailSize, PF_FloatRGBA,
+																	  bForceLinearGamma);
+								FTextureRenderTargetResource* RenderTargetResource = RenderTargetTexture->
+									GameThread_GetRenderTargetResource()->GetTextureRenderTarget2DResource();
+								RenderTargetTexture->UpdateResourceImmediate(true);
+
+								// Create a canvas for the render target and clear it to black
+								FCanvas Canvas(RenderTargetResource, nullptr, FGameTime::GetTimeSinceAppStart(),
+											   GMaxRHIFeatureLevel);
+								Canvas.Clear(FLinearColor::Black);
+								
+								constexpr int32 XPos = 0;
+								constexpr int32 YPos = 0;
+								constexpr bool bAdditionalViewFamily = false;
+
+								if (Cast<UBlueprintThumbnailRenderer>(RenderInfo->Renderer))
+								{
+									// Draw the thumbnail
+									GetCustomBlueprintThumbnailRenderer().Draw(Object,
+																			   XPos,
+																			   YPos,
+																			   ImageWidth,
+																			   ImageHeight,
+																			   RenderTargetResource,
+																			   &Canvas,
+																			   bAdditionalViewFamily
+									);
+								}
+								else if (Cast<UStaticMeshThumbnailRenderer>(RenderInfo->Renderer))
+								{
+									GetCustomStaticMeshThumbnailRenderer().Draw(Object,
+																				XPos,
+																				YPos,
+																				ImageWidth,
+																				ImageHeight,
+																				RenderTargetResource,
+																				&Canvas,
+																				bAdditionalViewFamily
+									);
+								}
+								else if (Cast<USkeletalMeshThumbnailRenderer>(RenderInfo->Renderer))
+								{
+									GetCustomSkeletalMeshThumbnailRenderer().Draw(Object,
+																				  XPos,
+																				  YPos,
+																				  ImageWidth,
+																				  ImageHeight,
+																				  RenderTargetResource,
+																				  &Canvas,
+																				  bAdditionalViewFamily
+									);
+								}
+								else
+								{
+									RenderInfo->Renderer->Draw(
+										Object,
+										XPos,
+										YPos,
+										ImageWidth,
+										ImageHeight,
+										RenderTargetResource,
+										&Canvas,
+										bAdditionalViewFamily
+									);
+								}
+
+								// If this object's thumbnail will be rendered to a texture on the GPU.
+								bool bUseGPUGeneratedThumbnail = true;
+
+								// GPU based thumbnail rendering only
+								if (bUseGPUGeneratedThumbnail)
+								{
+									// Tell the rendering thread to draw any remaining batched elements
+									Canvas.Flush_GameThread();
+									{
+										ENQUEUE_RENDER_COMMAND(UpdateThumbnailRTCommand)(
+											[RenderTargetResource](FRHICommandListImmediate& RHICmdList)
+											{
+												TransitionAndCopyTexture(
+													RHICmdList, RenderTargetResource->GetRenderTargetTexture(),
+													RenderTargetResource->TextureRHI, {});
+											});
+
+										if (ObjectThumnailPtr)
+										{
+											const FIntRect InSrcRect(0, 0, ObjectThumnailPtr->GetImageWidth(),
+																	 ObjectThumnailPtr->GetImageHeight());
+
+											TArray<uint8>& OutData = ObjectThumnailPtr->AccessImageData();
+
+											OutData.Empty();
+											OutData.AddUninitialized(
+												ObjectThumnailPtr->GetImageWidth() * ObjectThumnailPtr->GetImageHeight() *
+												sizeof(FColor));
+
+											// Copy the contents of the remote texture to system memory
+											// NOTE: OutRawImageData must be a preallocated buffer!
+											RenderTargetResource->ReadPixelsPtr(
+												(FColor*)OutData.GetData(), FReadSurfaceDataFlags(), InSrcRect);
+										}
+									}
+								}
+
+								int32 SizeX = ObjectThumbnail.GetImageWidth();
+								int32 SizeY = ObjectThumbnail.GetImageHeight();
+
+								FTexturePlatformData* platformData = new FTexturePlatformData();
+								platformData->SizeX = SizeX;
+								platformData->SizeY = SizeY;
+								platformData->SetNumSlices(1);
+								platformData->PixelFormat = PF_FloatRGBA;
+								NewTexture->SetPlatformData(platformData);
+								NewTexture->MipGenSettings = TMGS_NoMipmaps;
+
+								FTexture2DMipMap* Mip = new FTexture2DMipMap(SizeX, SizeY, 1);
+								NewTexture->GetPlatformData()->Mips.Add(Mip);
+
+								// Lock the texture so it can be modified
+								Mip->BulkData.Lock(LOCK_READ_WRITE);
+								uint8* TextureData = Mip->BulkData.Realloc(ImageWidth * ImageHeight * sizeof(FColor));
+
+								const TArray<uint8>& OldBytes = ObjectThumnailPtr->GetUncompressedImageData();
+
+								TArray<FColor> OldColors;
+								OldColors.SetNumUninitialized(OldBytes.Num() / sizeof(FColor));
+								FMemory::Memcpy(OldColors.GetData(), OldBytes.GetData(), OldBytes.Num());
+
+								if (GetEditorSettings().UseTransparentBackground)
+								{
+									FLinearColor TransparentColor;
+									GetEditorSettings().TranslucentMaterial->GetVectorParameterValue(
+										TEXT("Color"), TransparentColor);
+
+									for (FColor& OldColor : OldColors)
+									{
+										FLinearColor OldLinearColor = OldColor.ReinterpretAsLinear();
+										if (OldLinearColor.Equals(TransparentColor,
+																  GetEditorSettings().BackgroundCutoffThreshold))
+										{
+											OldColor.A = 0;
+										}
+									}
+								}
+
+								for (uint32 Y = 0; Y < ImageHeight; Y++)
+								{
+									uint64 Index = (ImageHeight - 1 - Y) * ImageWidth * sizeof(FColor);
+									uint8* DestPtr = &TextureData[Index];
+
+									FMemory::Memcpy(DestPtr, reinterpret_cast<const uint8*>(OldColors.GetData()) + Index,
+													ImageWidth * sizeof(FColor));
+								}
+								Mip->BulkData.Unlock();
+
+								NewTexture->Source.Init(SizeX, SizeY, 1,
+														1,
+														TSF_BGRA8, reinterpret_cast<const uint8*>(OldColors.GetData()));
+
+								NewTexture->SRGB = false;
+								NewTexture->MipGenSettings = TMGS_FromTextureGroup;
+								NewTexture->LODGroup = TEXTUREGROUP_UI; // Prepare the asset for UI use
+								NewTexture->CompressionSettings = TC_EditorIcon; // UI setting
+								NewTexture->DeferCompression = true;
+								NewTexture->PostEditChange();
+								NewTexture->UpdateResource();
+								//Package->MarkPackageDirty();
+
+								Package->FullyLoad();
+								Package->SetDirtyFlag(true);
+								FEditorFileUtils::PromptForCheckoutAndSave({Package}, false, false);
+								FAssetRegistryModule::AssetCreated(NewTexture);
+
+								RenderTargetTexture->RemoveFromRoot();
+							}
+							else
+							{
+								FailedToFindRenderInfo = true;
+							}
 						}
-
-						int32 SizeX = ObjectThumbnail->GetImageWidth();
-						int32 SizeY = ObjectThumbnail->GetImageHeight();
 						
-						FTexturePlatformData* platformData = new FTexturePlatformData();
-						platformData->SizeX = SizeX;
-						platformData->SizeY = SizeY;
-						platformData->SetNumSlices(1);
-						platformData->PixelFormat = PF_B8G8R8A8;
-						NewTexture->SetPlatformData(platformData);
-						NewTexture->MipGenSettings = TMGS_NoMipmaps;
-						
-						// similar to UTexture2D::CreateTransient but we're not creating a transient texture
-						// Allocate first mipmap.
-						int32 NumBlocksX = ObjectThumbnail->GetImageWidth() / GPixelFormats[PF_B8G8R8A8].BlockSizeX;
-						int32 NumBlocksY = ObjectThumbnail->GetImageHeight() / GPixelFormats[PF_B8G8R8A8].BlockSizeY;
-						FTexture2DMipMap* Mip = new FTexture2DMipMap(SizeX, SizeY, 1);
-						NewTexture->GetPlatformData()->Mips.Add(Mip);
-						Mip->BulkData.Lock(LOCK_READ_WRITE);
-						Mip->BulkData.Realloc((int64)NumBlocksX * NumBlocksY * GPixelFormats[PF_B8G8R8A8].BlockBytes);
-						Mip->BulkData.Unlock();
+						if ((!GetEditorSettings().UseTransparentBackground && !GetEditorSettings().
+                             							UseCustomBackgroundMaterial ) || FailedToFindRenderInfo) // use the existing thumbnail
+						{
+							FThumbnailMap ThumbnailMap;
+							ThumbnailTools::LoadThumbnailsFromPackage(PackageFilename, ObjectFullNames,
+							                                          ThumbnailMap);
 
-						// Apply Texture changes to GPU memory
-						NewTexture->UpdateResource();
+							FObjectThumbnail* ObjectThumbnail = ThumbnailMap.Find(ObjectFullName);
 
-						NewTexture->Source.Init(SizeX, SizeY, 1,
-						                        1,
-						                        TSF_BGRA8, ObjectThumbnail->GetUncompressedImageData().GetData());
-						NewTexture->LODGroup = TEXTUREGROUP_UI; // Prepare the asset for UI use
-						NewTexture->CompressionSettings = TC_Default; // No need for "UserInterface2D", no need for alpha, it was also having issues making the asset have a thumbnail itself
-						NewTexture->NeverStream = true;
-						NewTexture->CompressionNoAlpha = true;
 
-						NewTexture->UpdateResource();
-						Package->FullyLoad();
-						Package->SetDirtyFlag(true);
-						FEditorFileUtils::PromptForCheckoutAndSave({Package},false,false);
-						FAssetRegistryModule::AssetCreated(NewTexture);
+							if (!ObjectThumbnail)
+							{
+								return;
+							}
+
+							int32 SizeX = ObjectThumbnail->GetImageWidth();
+							int32 SizeY = ObjectThumbnail->GetImageHeight();
+
+							FTexturePlatformData* platformData = new FTexturePlatformData();
+							platformData->SizeX = SizeX;
+							platformData->SizeY = SizeY;
+							platformData->SetNumSlices(1);
+							platformData->PixelFormat = PF_B8G8R8A8;
+							NewTexture->SetPlatformData(platformData);
+							NewTexture->MipGenSettings = TMGS_NoMipmaps;
+
+							int32 NumBlocksX = ObjectThumbnail->GetImageWidth() / GPixelFormats[PF_B8G8R8A8].BlockSizeX;
+							int32 NumBlocksY = ObjectThumbnail->GetImageHeight() / GPixelFormats[PF_B8G8R8A8].
+								BlockSizeY;
+							FTexture2DMipMap* Mip = new FTexture2DMipMap(SizeX, SizeY, 1);
+							NewTexture->GetPlatformData()->Mips.Add(Mip);
+							Mip->BulkData.Lock(LOCK_READ_WRITE);
+							Mip->BulkData.Realloc(
+								static_cast<int64>(NumBlocksX) * NumBlocksY * GPixelFormats[PF_B8G8R8A8].BlockBytes);
+							Mip->BulkData.Unlock();
+
+							NewTexture->UpdateResource();
+
+							NewTexture->Source.Init(SizeX, SizeY, 1,
+							                        1,
+							                        TSF_BGRA8, ObjectThumbnail->GetUncompressedImageData().GetData());
+							NewTexture->LODGroup = TEXTUREGROUP_UI; // Prepare the asset for UI use
+							NewTexture->CompressionSettings = TC_Default;
+							// No need for "UserInterface2D", no need for alpha, it was also having issues making the asset have a thumbnail itself
+							NewTexture->NeverStream = true;
+							NewTexture->CompressionNoAlpha = true;
+
+							NewTexture->UpdateResource();
+							Package->FullyLoad();
+							Package->SetDirtyFlag(true);
+							FEditorFileUtils::PromptForCheckoutAndSave({Package}, false, false);
+							FAssetRegistryModule::AssetCreated(NewTexture);
+						}
 					}
 				}
 			})),
