@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "CustomBlueprintRenderer.h"
 #include "CustomSkeletalMeshThumbnailRenderer.h"
 #include "CustomStaticMeshThumbnailRenderer.h"
 #include "Modules/ModuleManager.h"
