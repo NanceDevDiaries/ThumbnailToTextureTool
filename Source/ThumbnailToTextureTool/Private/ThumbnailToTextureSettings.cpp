@@ -2,6 +2,7 @@
 
 
 #include "ThumbnailToTextureSettings.h"
+#include "UObject/ConstructorHelpers.h"
 
 UThumbnailToTextureSettings::UThumbnailToTextureSettings(const FObjectInitializer& ObjectInitializer): UseCustomBackgroundMaterial(false), UseTransparentBackground(false),
                                                             BackgroundCutoffThreshold(.5f)
