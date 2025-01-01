@@ -324,7 +324,7 @@ void FThumbnailToTextureToolModule::ExecuteSaveThumbnailAsTexture(FMenuBuilder& 
 								constexpr int32 YPos = 0;
 								constexpr bool bAdditionalViewFamily = false;
 
-								if (Cast<UBlueprintThumbnailRenderer>(RenderInfo->Renderer))
+								if (RenderInfo->Renderer->IsA(UBlueprintThumbnailRenderer::StaticClass()))
 								{
 									// Draw the thumbnail
 									GetCustomBlueprintThumbnailRenderer().Draw(Object,
@@ -337,19 +337,19 @@ void FThumbnailToTextureToolModule::ExecuteSaveThumbnailAsTexture(FMenuBuilder& 
 																			   bAdditionalViewFamily
 									);
 								}
-								else if (Cast<UStaticMeshThumbnailRenderer>(RenderInfo->Renderer))
+								else if (RenderInfo->Renderer->IsA(UStaticMeshThumbnailRenderer::StaticClass()))
 								{
 									GetCustomStaticMeshThumbnailRenderer().Draw(Object,
-																				XPos,
-																				YPos,
-																				ImageWidth,
-																				ImageHeight,
-																				RenderTargetResource,
-																				&Canvas,
-																				bAdditionalViewFamily
+										XPos,
+										YPos,
+										ImageWidth,
+										ImageHeight,
+										RenderTargetResource,
+										&Canvas,
+										bAdditionalViewFamily
 									);
 								}
-								else if (Cast<USkeletalMeshThumbnailRenderer>(RenderInfo->Renderer))
+								else if (RenderInfo->Renderer->IsA(USkeletalMeshThumbnailRenderer::StaticClass()))
 								{
 									GetCustomSkeletalMeshThumbnailRenderer().Draw(Object,
 																				  XPos,
@@ -422,8 +422,14 @@ void FThumbnailToTextureToolModule::ExecuteSaveThumbnailAsTexture(FMenuBuilder& 
 								platformData->PixelFormat = PF_FloatRGBA;
 								NewTexture->SetPlatformData(platformData);
 								NewTexture->MipGenSettings = TMGS_NoMipmaps;
-
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION <= 2
+								FTexture2DMipMap* Mip = new FTexture2DMipMap();
+								Mip->SizeX = SizeX;
+								Mip->SizeY = SizeY;
+								Mip->SizeZ = 1;
+#else
 								FTexture2DMipMap* Mip = new FTexture2DMipMap(SizeX, SizeY, 1);
+#endif
 								NewTexture->GetPlatformData()->Mips.Add(Mip);
 
 								// Lock the texture so it can be modified
@@ -518,7 +524,14 @@ void FThumbnailToTextureToolModule::ExecuteSaveThumbnailAsTexture(FMenuBuilder& 
 							int32 NumBlocksX = ObjectThumbnail->GetImageWidth() / GPixelFormats[PF_B8G8R8A8].BlockSizeX;
 							int32 NumBlocksY = ObjectThumbnail->GetImageHeight() / GPixelFormats[PF_B8G8R8A8].
 								BlockSizeY;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION <= 2
+							FTexture2DMipMap* Mip = new FTexture2DMipMap();
+							Mip->SizeX = SizeX;
+							Mip->SizeY = SizeY;
+							Mip->SizeZ = 1;
+#else
 							FTexture2DMipMap* Mip = new FTexture2DMipMap(SizeX, SizeY, 1);
+#endif
 							NewTexture->GetPlatformData()->Mips.Add(Mip);
 							Mip->BulkData.Lock(LOCK_READ_WRITE);
 							Mip->BulkData.Realloc(

@@ -2,6 +2,8 @@
 
 #include "CustomThumbnailHelpers.h"
 
+#include "ContentStreaming.h"
+#include "Math/MathFwd.h"
 #include "UnrealEdGlobals.h"
 #include "Animation/SkeletalMeshActor.h"
 #include "Components/DirectionalLightComponent.h"
@@ -274,7 +276,11 @@ bool FCustomClassActorThumbnailScene::IsValidComponentForVisualization(const UAc
 
 FBoxSphereBounds FCustomClassActorThumbnailScene::GetPreviewActorBounds() const
 {
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION <= 2
+	FBoxSphereBounds BoundsBuilder;
+#else
 	FBoxSphereBounds::Builder BoundsBuilder;
+#endif
 	if (PreviewActor.IsValid() && PreviewActor->GetRootComponent())
 	{
 		TArray<USceneComponent*> PreviewComponents;
@@ -285,7 +291,11 @@ FBoxSphereBounds FCustomClassActorThumbnailScene::GetPreviewActorBounds() const
 		{
 			if (IsValidComponentForVisualization(PreviewComponent))
 			{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION <= 2
+				BoundsBuilder = Union(BoundsBuilder, PreviewComponent->Bounds);
+#else
 				BoundsBuilder += PreviewComponent->Bounds;
+#endif
 			}
 		}
 	}

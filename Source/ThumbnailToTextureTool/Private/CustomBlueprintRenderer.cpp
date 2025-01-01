@@ -7,6 +7,11 @@
 #include "ThumbnailToTextureSettings.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "ThumbnailRendering/ThumbnailManager.h"
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION <= 2
+#include "Engine/Blueprint.h"
+#include "Engine/SCS_Node.h"
+#include "Engine/InheritableComponentHandler.h"
+#endif
 
 UCustomBlueprintRenderer::UCustomBlueprintRenderer(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -43,6 +48,7 @@ void UCustomBlueprintRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 Wi
 			.SetAdditionalViewFamily(bAdditionalViewFamily));
 
 		ViewFamily.EngineShowFlags.DisableAdvancedFeatures();
+		ViewFamily.EngineShowFlags.MotionBlur = 0;
 		ViewFamily.EngineShowFlags.LOD = 0;
 
 		RenderViewFamily(Canvas, &ViewFamily, ThumbnailScene->CreateView(&ViewFamily, X, Y, Width, Height));
@@ -58,11 +64,70 @@ bool UCustomBlueprintRenderer::CanVisualizeAsset(UObject* Object)
 	// Only visualize actor based blueprints
 	if (Blueprint && Blueprint->GeneratedClass && Blueprint->GeneratedClass->IsChildOf(AActor::StaticClass()))
 	{
-		AActor::ForEachComponentOfActorClassDefault<UActorComponent>(TSubclassOf<AActor>(Blueprint->GeneratedClass), [&](const UActorComponent* Component)
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION <= 2
+		// Try to find any visible primitive components in the native class' CDO
+		AActor* CDO = Blueprint->GeneratedClass->GetDefaultObject<AActor>();
+
+		for (UActorComponent* Component : CDO->GetComponents())
 		{
-			bCanVisualizeAsset = FBlueprintThumbnailScene::IsValidComponentForVisualization(Component);
-			return !bCanVisualizeAsset;
-		});
+			if (FBlueprintThumbnailScene::IsValidComponentForVisualization(Component))
+			{
+				return true;
+			}
+		}
+
+		UBlueprint* BlueprintToHarvestComponents = Blueprint;
+		TSet<UBlueprint*> AllVisitedBlueprints;
+		while (BlueprintToHarvestComponents)
+		{
+			AllVisitedBlueprints.Add(BlueprintToHarvestComponents);
+
+			// Try to find any visible primitive components in the simple construction script
+			if (BlueprintToHarvestComponents->SimpleConstructionScript)
+			{
+				for (USCS_Node* Node : BlueprintToHarvestComponents->SimpleConstructionScript->GetAllNodes())
+				{
+					if (FBlueprintThumbnailScene::IsValidComponentForVisualization(Node->ComponentTemplate))
+					{
+						return true;
+					}
+				}
+			}
+
+			// Check if any inheritable components from parents have valid data
+			if (BlueprintToHarvestComponents->InheritableComponentHandler)
+			{
+				for (TArray<FComponentOverrideRecord>::TIterator InheritedComponentsIter = BlueprintToHarvestComponents->InheritableComponentHandler->CreateRecordIterator(); InheritedComponentsIter; ++InheritedComponentsIter)
+				{
+					if (FBlueprintThumbnailScene::IsValidComponentForVisualization(InheritedComponentsIter->ComponentTemplate))
+					{
+						return true;
+					}
+				}
+			}
+
+			UClass* ParentClass = BlueprintToHarvestComponents->ParentClass;
+			BlueprintToHarvestComponents = nullptr;
+
+			// If the parent class was a blueprint generated class, check it's simple construction script components as well
+			if (ParentClass)
+			{
+				UBlueprint* ParentBlueprint = Cast<UBlueprint>(ParentClass->ClassGeneratedBy);
+
+				// Also make sure we haven't visited the blueprint already. This would only happen if there was a loop of parent classes.
+				if (ParentBlueprint && !AllVisitedBlueprints.Contains(ParentBlueprint))
+				{
+					BlueprintToHarvestComponents = ParentBlueprint;
+				}
+			}
+		}
+#else
+		AActor::ForEachComponentOfActorClassDefault<UActorComponent>(TSubclassOf<AActor>(Blueprint->GeneratedClass), [&](const UActorComponent* Component)
+			{
+				bCanVisualizeAsset = FBlueprintThumbnailScene::IsValidComponentForVisualization(Component);
+				return !bCanVisualizeAsset;
+			});
+#endif
 	}
 
 	return bCanVisualizeAsset;
