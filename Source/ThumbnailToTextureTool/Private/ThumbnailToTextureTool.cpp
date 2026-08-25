@@ -20,8 +20,11 @@
 #include "ThumbnailRendering/SkeletalMeshThumbnailRenderer.h"
 #include "ThumbnailRendering/StaticMeshThumbnailRenderer.h"
 #include "ThumbnailRendering/TextureThumbnailRenderer.h"
+#include "UObject/ObjectRedirector.h"
 
 #define LOCTEXT_NAMESPACE "FThumbnailToTextureToolModule"
+
+DEFINE_LOG_CATEGORY_STATIC(LogThumbnailToTextureTool, Log, All);
 
 /**
  * Implements the FThumbnailToTextureToolModule module.
@@ -246,14 +249,11 @@ void FThumbnailToTextureToolModule::ExecuteSaveThumbnailAsTexture(FMenuBuilder& 
 					if (int32 PathSeparatorIdx; AssetName.FindChar('/', PathSeparatorIdx))
 					{
 						// TextureName should not have any path separators in it
-						return;
+						continue;
 					}
 
 					// Create the new texture 2D and save it on disk
 					FString PackageFilename;
-					const FName ObjectFullName = FName(*AssetData.GetFullName());
-					TSet<FName> ObjectFullNames;
-					ObjectFullNames.Add(ObjectFullName);
 
 					FString PackageName = GetEditorSettings().RootTexture2DSaveDir.Path;
 					if (!PackageName.EndsWith("/"))
@@ -264,6 +264,33 @@ void FThumbnailToTextureToolModule::ExecuteSaveThumbnailAsTexture(FMenuBuilder& 
 
 					UPackage* Package = CreatePackage(*PackageName);
 					Package->FullyLoad();
+
+					// Something may already occupy this object path. Most commonly it is an
+					// UObjectRedirector left behind when a previously exported texture was renamed or
+					// moved: NewObject() below would then hit a fatal "Cannot replace existing object of
+					// a different class" and take the whole editor down, so clear the path first.
+					if (UObject* ExistingObject = StaticFindObject(nullptr, Package, *AssetName))
+					{
+						if (UObjectRedirector* ExistingRedirector = Cast<UObjectRedirector>(ExistingObject))
+						{
+							// A redirector is only a forwarding stub, so move it out of the way instead of
+							// deleting it. Saving the package below drops it for good.
+							UE_LOG(LogThumbnailToTextureTool, Log,
+							       TEXT("Moving redirector '%s' aside to make room for the exported texture."),
+							       *ExistingRedirector->GetPathName());
+							ExistingRedirector->Rename(nullptr, GetTransientPackage(),
+							                           REN_DontCreateRedirectors | REN_NonTransactional);
+						}
+						else if (!ExistingObject->IsA<UTexture2D>())
+						{
+							// Overwriting an unrelated asset is never what the user asked for.
+							UE_LOG(LogThumbnailToTextureTool, Error,
+							       TEXT("Cannot export thumbnail of '%s': '%s' is already used by a %s. ")
+							       TEXT("Rename or delete it, or change the export directory in the project settings."),
+							       *AssetData.GetFullName(), *PackageName, *ExistingObject->GetClass()->GetName());
+							continue;
+						}
+					}
 
 					UTexture2D* NewTexture = NewObject<UTexture2D>(Package, *AssetName,
 					                                               RF_Public | RF_Standalone);
@@ -301,10 +328,33 @@ void FThumbnailToTextureToolModule::ExecuteSaveThumbnailAsTexture(FMenuBuilder& 
 							{
 								ObjectThumbnail.SetImageSize(ImageWidth, ImageHeight);
 
+								// Transparency is done by chroma keying: the background geometry renders the
+								// flat colour held in the background material's "Color" parameter, and every
+								// pixel close to it has its alpha zeroed further down. Resolve that colour once
+								// here and clear the render target to the very same value, so pixels the
+								// background geometry does not cover key out as well - otherwise they keep the
+								// clear colour, never match the key, and the export comes out with an opaque
+								// background.
+								FLinearColor BackgroundKeyColor = FLinearColor::White;
+								if (GetEditorSettings().UseTransparentBackground)
+								{
+									UMaterial* KeyColorMaterial = GetEditorSettings().TranslucentMaterial;
+									// FLinearColor's default constructor leaves the channels uninitialised, so the
+									// return value has to be honoured rather than ignored.
+									if (!KeyColorMaterial ||
+									    !KeyColorMaterial->GetVectorParameterValue(TEXT("Color"), BackgroundKeyColor))
+									{
+										UE_LOG(LogThumbnailToTextureTool, Warning,
+										       TEXT("Background material has no \"Color\" parameter, falling back to magenta. ")
+										       TEXT("Transparency may be inaccurate."));
+										BackgroundKeyColor = FLinearColor(1.f, 0.f, 1.f, 1.f);
+									}
+								}
+
 								UTextureRenderTarget2D* RenderTargetTexture = NewObject<UTextureRenderTarget2D>();
 								RenderTargetTexture->AddToRoot();
 								check(RenderTargetTexture);
-								RenderTargetTexture->ClearColor = FLinearColor::White;
+								RenderTargetTexture->ClearColor = BackgroundKeyColor;
 								RenderTargetTexture->SRGB = 1;
 								RenderTargetTexture->RenderTargetFormat = RTF_RGBA8;
 								constexpr bool bForceLinearGamma = false;
@@ -444,14 +494,10 @@ void FThumbnailToTextureToolModule::ExecuteSaveThumbnailAsTexture(FMenuBuilder& 
 
 								if (GetEditorSettings().UseTransparentBackground)
 								{
-									FLinearColor TransparentColor;
-									GetEditorSettings().TranslucentMaterial->GetVectorParameterValue(
-										TEXT("Color"), TransparentColor);
-
 									for (FColor& OldColor : OldColors)
 									{
 										FLinearColor OldLinearColor = OldColor.ReinterpretAsLinear();
-										if (OldLinearColor.Equals(TransparentColor,
+										if (OldLinearColor.Equals(BackgroundKeyColor,
 																  GetEditorSettings().BackgroundCutoffThreshold))
 										{
 											OldColor.A = 0;
@@ -459,14 +505,10 @@ void FThumbnailToTextureToolModule::ExecuteSaveThumbnailAsTexture(FMenuBuilder& 
 									}
 								}
 
-								for (uint32 Y = 0; Y < ImageHeight; Y++)
-								{
-									uint64 Index = (ImageHeight - 1 - Y) * ImageWidth * sizeof(FColor);
-									uint8* DestPtr = &TextureData[Index];
-
-									FMemory::Memcpy(DestPtr, reinterpret_cast<const uint8*>(OldColors.GetData()) + Index,
-													ImageWidth * sizeof(FColor));
-								}
+								// Row-by-row copy that used the same offset for source and destination, so it
+								// only ever copied each row onto itself. Same result, stated plainly.
+								FMemory::Memcpy(TextureData, OldColors.GetData(),
+								                ImageWidth * ImageHeight * sizeof(FColor));
 								Mip->BulkData.Unlock();
 
 								NewTexture->Source.Init(SizeX, SizeY, 1,
@@ -498,16 +540,38 @@ void FThumbnailToTextureToolModule::ExecuteSaveThumbnailAsTexture(FMenuBuilder& 
 						if ((!GetEditorSettings().UseTransparentBackground && !GetEditorSettings().
                              							UseCustomBackgroundMaterial ) || FailedToFindRenderInfo) // use the existing thumbnail
 						{
-							FThumbnailMap ThumbnailMap;
-							ThumbnailTools::LoadThumbnailsFromPackage(PackageFilename, ObjectFullNames,
-							                                          ThumbnailMap);
-
-							FObjectThumbnail* ObjectThumbnail = ThumbnailMap.Find(ObjectFullName);
-
-
-							if (!ObjectThumbnail)
+							// Render the thumbnail now instead of reading the copy cached inside the
+							// .uasset. That cached copy is only regenerated on save when it is missing,
+							// empty or dirty, and rotating a thumbnail in the Content Browser only mutates
+							// the asset's USceneThumbnailInfo - it never marks the cached image dirty. The
+							// export therefore used to keep whatever angle was baked in on first save,
+							// which for most assets is the default one. Rendering live goes through the very
+							// same path the Content Browser uses, so the orbit the user set is honoured.
+							UObject* ObjectToRender = AssetData.GetAsset();
+							if (!ObjectToRender)
 							{
-								return;
+								UE_LOG(LogThumbnailToTextureTool, Warning,
+								       TEXT("Cannot export thumbnail of '%s': the asset could not be loaded."),
+								       *AssetData.GetFullName());
+								continue;
+							}
+
+							FObjectThumbnail RenderedThumbnail;
+							ThumbnailTools::RenderThumbnail(ObjectToRender,
+							                                ThumbnailTools::DefaultThumbnailSize,
+							                                ThumbnailTools::DefaultThumbnailSize,
+							                                ThumbnailTools::EThumbnailTextureFlushMode::AlwaysFlush,
+							                                nullptr,
+							                                &RenderedThumbnail);
+
+							FObjectThumbnail* ObjectThumbnail = &RenderedThumbnail;
+
+							if (ObjectThumbnail->GetImageWidth() <= 0 || ObjectThumbnail->GetImageHeight() <= 0)
+							{
+								UE_LOG(LogThumbnailToTextureTool, Warning,
+								       TEXT("Cannot export thumbnail of '%s': the renderer produced an empty image."),
+								       *AssetData.GetFullName());
+								continue;
 							}
 
 							int32 SizeX = ObjectThumbnail->GetImageWidth();
